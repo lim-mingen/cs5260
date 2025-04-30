@@ -1,12 +1,10 @@
 import gradio as gr
 import pandas as pd
-import base64
 from util import (
     fetch_papers,
     summarize_abstract_spacy,
     extract_entities,
     build_concept_map,
-    save_graph_html,
 )
 
 def df_to_html_table(df: pd.DataFrame) -> str:
@@ -68,26 +66,21 @@ def process_all(papers):
         for phrase in ents:
             print(phrase)
         graph = build_concept_map(ents)
-
-        # save standalone HTML
-        html_path = save_graph_html(graph, p["entry_id"])
-
-        # read that HTML & encode as base64
-        with open(html_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        iframe = (
+        snippet = graph.generate_html()
+        full_html = graph.generate_html()
+        escaped = full_html.replace('"', '&quot;')
+        snippet = (
             f"<iframe "
-            f"src='data:text/html;base64,{b64}' "
-            f"style='width:100%; height:600px; border:none;'"
+            f"srcdoc=\"{escaped}\" "
+            f"style=\"width:100%; height:600px; border:none;\""
             f"></iframe>"
         )
-
-        # assemble section
-        parts.append(f"<h2>{p['title']}</h2>")
-        parts.append(f"<p>{summary}</p>")
-        parts.append(iframe)
-        parts.append("<hr>")
+        parts += [
+            f"<h2>{p['title']}</h2>",
+            f"<p>{summary}</p>",
+            snippet,
+            "<hr>"
+        ]
     parts.append("</div>")
     return "\n".join(parts)
 

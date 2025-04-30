@@ -1,22 +1,13 @@
-# utils.py
-
 import os
 import arxiv
-import requests
-import PyPDF2
 import spacy
+import numpy as np
 from pyvis.network import Network
 from itertools import combinations
 from transformers import PegasusForConditionalGeneration, PegasusTokenizer
-
-# +++ new imports +++
+from sentence_transformers import SentenceTransformer
 from keybert import KeyBERT
-
-# ensure folders
-PDF_DIR  = "pdf"
-HTML_DIR = "output"
-os.makedirs(PDF_DIR, exist_ok=True)
-os.makedirs(HTML_DIR, exist_ok=True)
+from sklearn.cluster import AgglomerativeClustering
 
 # load Pegasus summarizer
 tokenizer = PegasusTokenizer.from_pretrained("google/pegasus-xsum")
@@ -24,10 +15,8 @@ model     = PegasusForConditionalGeneration.from_pretrained("google/pegasus-xsum
 
 # spaCy only for sentence‐splitting in concept‐map
 nlp = spacy.load("en_core_web_sm")
-
-# +++ Initialize KeyBERT with SciBERT embeddings +++
-# this will download the SciBERT model under the hood
-kw_model = KeyBERT(model="allenai/scibert_scivocab_uncased")
+kw_model = KeyBERT(model="sentence-transformers/allenai-specter")
+embed_model = SentenceTransformer("sentence-transformers/allenai-specter")
 
 def fetch_papers(query: str, max_results: int = 5):
     search = arxiv.Search(query=query, max_results=max_results)
@@ -63,8 +52,54 @@ def summarize_abstract_spacy(text: str, num_sentences: int = 3) -> str:
     best_sorted = sorted(best, key=lambda s: list(doc.sents).index(s))
     return " ".join(s.text.strip() for s in best_sorted)
 
+def normalize_phrase(phrase: str) -> str:
+    doc = nlp(phrase)
+    lemmas = [tok.lemma_ for tok in doc if not tok.is_stop]
+    return " ".join(lemmas)
+
+def dedupe_by_substring(phrases):
+    """
+    phrases: list of (phrase, score) tuples sorted by score descending
+    Returns a filtered list where no phrase is a substring of another.
+    """
+    filtered = []
+    for ph, sc in phrases:
+        # if any already-kept phrase contains this one, skip it
+        if any(ph in kept for kept, _ in filtered):
+            continue
+        # if this phrase contains any already-kept shorter phrase, remove that shorter phrase
+        filtered = [(k,s) for k,s in filtered if ph not in k]
+        filtered.append((ph, sc))
+    return filtered
+
+def dedupe_by_embedding(phrases, threshold: float = 0.1):
+    """
+    phrases: list of (normalized_phrase, score) tuples
+    threshold: cosine‐distance cutoff (lower = tighter clusters)
+    """
+    texts = [ph for ph, _ in phrases]
+    # normalized embeddings, so cosine = dot product
+    embs = embed_model.encode(texts, normalize_embeddings=True)
+
+    # cluster by cosine distance
+    clustering = AgglomerativeClustering(
+        n_clusters=None,
+        metric="cosine",
+        linkage="average",
+        distance_threshold=threshold
+    ).fit(embs)
+
+    clusters = {}
+    for (ph, sc), lbl in zip(phrases, clustering.labels_):
+        clusters.setdefault(lbl, []).append((ph, sc))
+
+    # pick top scoring phrase per cluster
+    result = [max(members, key=lambda x: x[1]) for members in clusters.values()]
+    # sort by score
+    return sorted(result, key=lambda x: x[1], reverse=True)
+
 # +++ replace extract_entities with KeyBERT-based extraction +++
-def extract_entities(text: str, top_n: int = 10):
+def extract_entities(text: str, top_n: int = 20):
     """
     Use SciBERT via KeyBERT to get top_n keyphrases, 
     then drop any phrase containing a VERB token.
@@ -75,55 +110,42 @@ def extract_entities(text: str, top_n: int = 10):
         stop_words="english",
         top_n=top_n
     )
-    filtered = []
-    for phrase, score in raw_phrases:
-        doc = nlp(phrase)
-        # skip if *any* token in the phrase is a verb
-        if any(tok.pos_ == "VERB" for tok in doc):
-            continue
-        filtered.append((phrase, "KEYPHRASE"))
-    return filtered
+    subphrases = dedupe_by_substring(raw_phrases)
+    deduped = dedupe_by_embedding(subphrases)
 
-def build_concept_map(phrases, min_cooccurrence=1):
+    return [(ph, "KEYPHRASE") for ph, _ in deduped[:10]]
+
+def build_concept_map(phrases, sim_threshold: float = 0.85) -> Network:
     """
-    phrases: list of (phrase_text, label) tuples
-    min_cooccurrence: only draw edges for pairs seen together at least this many times
+    phrases: list of (text, label) tuples
+    sim_threshold: cosine‐sim cutoff for adding an edge
     """
-    # 1) Build a mapping from phrase→node_id
-    net    = Network(height="600px", width="100%")
+    net = Network(height="600px", width="100%")
+    # 1) Add nodes
     id_map = {}
-    for i, (ph, lbl) in enumerate(phrases, start=1):
-        id_map[ph] = i
-        net.add_node(i, label=ph, title=lbl)
+    texts  = [ph for ph, _ in phrases]
+    for idx, (ph, lbl) in enumerate(phrases, start=1):
+        id_map[ph] = idx
+        net.add_node(idx, label=ph, title=lbl)
+    # 2) Compute embeddings for all phrases
+    embeddings = embed_model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    # 3) Compare each pair
+    for i, j in combinations(range(len(texts)), 2):
+        sim = float(np.dot(embeddings[i], embeddings[j]))  # since normalized, dot=cosine
+        print(f"sim({texts[i]}, {texts[j]}) = {sim:.3f}")
+        if sim >= sim_threshold:
+            net.add_edge(id_map[texts[i]], id_map[texts[j]], value=sim)
 
-    # 2) Parse the combined text to get sentence boundaries
-    text = " ".join(ph for ph, _ in phrases)
-    doc  = nlp(text)
-
-    # 3) Count co-occurrences in each sentence
-    cooc = {}
-    for sent in doc.sents:
-        # find which phrases appear in this sentence
-        present = [ph for ph, _ in phrases if ph in sent.text]
-        for a, b in combinations(present, 2):
-            pair = tuple(sorted((a,b)))
-            cooc[pair] = cooc.get(pair, 0) + 1
-
-    # 4) Add edges for pairs above your threshold
-    for (a, b), count in cooc.items():
-        if count >= min_cooccurrence:
-            net.add_edge(id_map[a], id_map[b], value=count)
-
-    # 5) (Optional) Tune physics so thicker edges pull nodes closer
     net.set_options("""
     {
-      "physics": {"forceAtlas2Based": {"gravitationalConstant": -50}},
-      "edges": { "smooth": false }
+    "physics": {
+        "solver": "repulsion",
+        "repulsion": {
+        "nodeDistance": 200,
+        "springLength": 200,
+        "damping": 0.5
+        }
+    }
     }
     """)
     return net
-
-def save_graph_html(net: Network, name: str) -> str:
-    path = os.path.join(HTML_DIR, f"{name}.html")
-    net.write_html(path)
-    return path
