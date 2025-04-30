@@ -4,7 +4,7 @@ import spacy
 import numpy as np
 from pyvis.network import Network
 from itertools import combinations
-from transformers import PegasusForConditionalGeneration, PegasusTokenizer
+from transformers import PegasusForConditionalGeneration, PegasusTokenizer, BartForConditionalGeneration, BartTokenizer
 from sentence_transformers import SentenceTransformer
 from keybert import KeyBERT
 from sklearn.cluster import AgglomerativeClustering
@@ -21,6 +21,8 @@ cr = Crossref(mailto="limmingen95@gmail.com")
 # load Pegasus summarizer
 tokenizer = PegasusTokenizer.from_pretrained("google/pegasus-xsum")
 model     = PegasusForConditionalGeneration.from_pretrained("google/pegasus-xsum")
+bart_tokenizer = BartTokenizer.from_pretrained("facebook/bart-large-cnn")
+bart_model     = BartForConditionalGeneration.from_pretrained("facebook/bart-large-cnn")
 
 # spaCy only for sentence‐splitting in concept‐map
 nlp = spacy.load("en_core_web_sm")
@@ -181,13 +183,24 @@ def build_narrative(cluster_summaries):
         parts.append(f"- **Theme {label+1}**: {summ}")
     return "\n\n".join(parts)
 
-def summarize_text(text: str, max_length: int = 200) -> str:
-    # … existing Pegasus‐based summarizer …
-    inputs = tokenizer(text, truncation=True, padding="longest", return_tensors="pt")
-    summary_ids = model.generate(
-        **inputs, max_length=max_length, num_beams=5, early_stopping=True
+def summarize_text_multi(text: str, max_length: int = 200, min_length: int = 80) -> str:
+    inputs = bart_tokenizer(
+        text,
+        truncation=True,
+        padding="longest",
+        return_tensors="pt",
+        max_length=1024,      # BART’s max input
     )
-    return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+    summary_ids = bart_model.generate(
+        inputs["input_ids"],
+        num_beams=4,
+        length_penalty=2.0,
+        max_length=max_length,
+        min_length=min_length,
+        no_repeat_ngram_size=3,
+        early_stopping=True
+    )
+    return bart_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
 def summarize_abstracts_batch(
         abstracts: List[str],
@@ -206,51 +219,84 @@ def summarize_abstracts_batch(
         chunk = abstracts[i : i + chunk_size]
         text  = "\n\n".join(chunk)
         # use your existing PEGASUS summarizer
-        sum_chunk = summarize_text(text, max_length=max_length)
+        sum_chunk = summarize_text_multi(text, max_length=max_length)
         intermediate_summaries.append(sum_chunk)
 
     # 2) Combine intermediate summaries
     combined = "\n\n".join(intermediate_summaries)
 
     # 3) Final pass
-    final_summary = summarize_text(combined, max_length=max_length)
+    final_summary = summarize_text_multi(combined, max_length=max_length)
     return final_summary
 
 def build_global_concept_map(papers):
     """
-    Aggregate keyphrases from all papers, size nodes by frequency, and
-    connect nodes if they co-occur in the same paper.
+    Aggregate keyphrases from all papers, size nodes by frequency,
+    connect co-occurring phrases, and show paper titles on hover.
     """
-    # 1) collect per-paper sets of phrases
-    per_paper = []
+    # 1) Map each phrase to the set of paper titles where it appears
+    phrase_to_titles = {}
     for p in papers:
         ents = extract_entities(p["abstract"])
-        per_paper.append({e for e,_ in ents})
+        phrases = {e for e,_ in ents}
+        for ph in phrases:
+            phrase_to_titles.setdefault(ph, []).append(p["title"])
 
-    # 2) flatten all and count frequencies
-    all_phrases = [e for p in per_paper for e in p]
-    freq = Counter(all_phrases)
-    nodes = list(freq.keys())
+    # 2) Count overall frequencies
+    all_phrases = [ph for titles in phrase_to_titles.values() for ph in titles]
+    # Actually we want frequencies of phrases, so:
+    freq = Counter()
+    for ph, titles in phrase_to_titles.items():
+        freq[ph] = len(titles)
 
-    # 3) build network
+    # 3) Build the network
     net = Network(height="600px", width="100%")
-    id_map = {ph:i for i,ph in enumerate(nodes, start=1)}
+    id_map = {ph: idx for idx, ph in enumerate(freq, start=1)}
+
+    # Add nodes with tooltip = list of titles
     for ph, count in freq.items():
+        titles = phrase_to_titles.get(ph, [])
+        # join titles with HTML line breaks
+        tooltip = "<br>".join(titles)
         net.add_node(
             id_map[ph],
             label=ph,
-            title=f"{count} papers",
-            size=10 + 2*count
+            title=tooltip,
+            size=10 + 2 * count
         )
 
-    # 4) co-occurrence edges (per paper)
+    # 4) Co-occurrence edges (per paper)
     cooc = Counter()
-    for phrases in per_paper:
-        for a,b in combinations(sorted(phrases), 2):
-            cooc[(a,b)] += 1
-    for (a,b), c in cooc.items():
+    for titles in phrase_to_titles.values():
+        # we actually need to rebuild per-paper phrase sets:
+        pass  # we'll rebuild below
+
+    # Better: rebuild per-paper sets to count co-occurrence
+    per_paper_sets = []
+    for p in papers:
+        ents = extract_entities(p["abstract"])
+        per_paper_sets.append({e for e,_ in ents})
+
+    for phrases in per_paper_sets:
+        for a, b in combinations(sorted(phrases), 2):
+            cooc[(a, b)] += 1
+
+    for (a, b), c in cooc.items():
         net.add_edge(id_map[a], id_map[b], value=c)
 
+    # 5) Tweak physics for more space
+    net.set_options("""
+    {
+      "physics": {
+        "solver": "repulsion",
+        "repulsion": {
+          "nodeDistance": 250,
+          "springLength": 200,
+          "damping": 0.5
+        }
+      }
+    }
+    """)
     return net
 
 def build_concept_map(phrases, sim_threshold: float = 0.85) -> Network:
