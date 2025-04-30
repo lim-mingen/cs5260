@@ -8,6 +8,15 @@ from transformers import PegasusForConditionalGeneration, PegasusTokenizer
 from sentence_transformers import SentenceTransformer
 from keybert import KeyBERT
 from sklearn.cluster import AgglomerativeClustering
+from semanticscholar import SemanticScholar
+from habanero import Crossref
+from collections import Counter
+from sklearn.cluster import KMeans
+import arxiv
+from typing import List
+
+sch = SemanticScholar(timeout=30)
+cr = Crossref(mailto="limmingen95@gmail.com")
 
 # load Pegasus summarizer
 tokenizer = PegasusTokenizer.from_pretrained("google/pegasus-xsum")
@@ -18,17 +27,33 @@ nlp = spacy.load("en_core_web_sm")
 kw_model = KeyBERT(model="sentence-transformers/allenai-specter")
 embed_model = SentenceTransformer("sentence-transformers/allenai-specter")
 
-def fetch_papers(query: str, max_results: int = 5):
+def fetch_arxiv(query, max_results=5):
     search = arxiv.Search(query=query, max_results=max_results)
+    return [{
+        "entry_id": r.entry_id.split("/")[-1],
+        "title":    r.title,
+        "abstract": r.summary
+    } for r in search.results()]
+
+def fetch_semantic_scholar(query, max_results=5): 
+    paginated = sch.search_paper(query, fields=['title'], limit=max_results) 
+    first_page = paginated.items
     papers = []
-    for result in search.results():
+    for paper in first_page:
         papers.append({
-            "entry_id": result.entry_id.split("/")[-1],
-            "title":    result.title,
-            "abstract": result.summary,
-            "pdf_url":  result.pdf_url.replace("/abs/", "/pdf/") + ".pdf"
+            "entry_id": paper.paperId,
+            "title":    paper.title,
+            "abstract": paper.abstract or ""
         })
     return papers
+
+def fetch_crossref(query, max_results=5):
+    items = cr.works(query=query, limit=max_results)["message"]["items"]
+    return [{
+        "entry_id": itm.get("DOI", str(i)),
+        "title":    itm.get("title", [""])[0],
+        "abstract": itm.get("abstract", "")
+    } for i, itm in enumerate(items)]
 
 def summarize_abstract_spacy(text: str, num_sentences: int = 3) -> str:
     # (same as before) extractive summarizer via spaCy
@@ -114,6 +139,119 @@ def extract_entities(text: str, top_n: int = 20):
     deduped = dedupe_by_embedding(subphrases)
 
     return [(ph, "KEYPHRASE") for ph, _ in deduped[:10]]
+
+def cluster_abstracts(abstracts, max_clusters=5):
+    """
+    Cluster the list of abstracts into up to max_clusters using KMeans on Sci-paper embeddings.
+    Returns a dict: {cluster_label: [abstract1, abstract2, ...], ...}
+    """
+    n = len(abstracts)
+    k = min(max_clusters, n)
+    embs = embed_model.encode(abstracts, normalize_embeddings=True)
+    km   = KMeans(n_clusters=k, random_state=0).fit(embs)
+    clusters = {}
+    for idx, label in enumerate(km.labels_):
+        clusters.setdefault(label, []).append(abstracts[idx])
+    return clusters
+
+def summarize_clusters(clusters):
+    """
+    Take a dict of clusters→[abstracts], summarize each cluster as one text block.
+    Returns: {cluster_label: summary_text, ...}
+    """
+    from transformers import PegasusForConditionalGeneration, PegasusTokenizer
+    tok = PegasusTokenizer.from_pretrained("google/pegasus-xsum")
+    m   = PegasusForConditionalGeneration.from_pretrained("google/pegasus-xsum")
+
+    summaries = {}
+    for label, abs_list in clusters.items():
+        text = " ".join(abs_list)
+        inputs = tok(text, truncation=True, padding="longest", return_tensors="pt")
+        ids = m.generate(**inputs, max_length=150, num_beams=4, early_stopping=True)
+        summaries[label] = tok.decode(ids[0], skip_special_tokens=True)
+    return summaries
+
+def build_narrative(cluster_summaries):
+    """
+    Given cluster summaries dict, write an overarching narrative as markdown.
+    """
+    k = len(cluster_summaries)
+    parts = [f"We identified **{k}** major themes across the retrieved papers:\n"]
+    for label, summ in cluster_summaries.items():
+        parts.append(f"- **Theme {label+1}**: {summ}")
+    return "\n\n".join(parts)
+
+def summarize_text(text: str, max_length: int = 200) -> str:
+    # … existing Pegasus‐based summarizer …
+    inputs = tokenizer(text, truncation=True, padding="longest", return_tensors="pt")
+    summary_ids = model.generate(
+        **inputs, max_length=max_length, num_beams=5, early_stopping=True
+    )
+    return tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
+def summarize_abstracts_batch(
+        abstracts: List[str],
+        max_length: int = 200,
+        chunk_size: int = 3
+    ) -> str:
+    """
+    Hierarchical summarization of a list of abstracts:
+      1) Break into chunks of `chunk_size`
+      2) Summarize each chunk (max_length tokens)
+      3) Concatenate chunk-summaries and summarize again
+    """
+    # 1) Summarize each chunk
+    intermediate_summaries = []
+    for i in range(0, len(abstracts), chunk_size):
+        chunk = abstracts[i : i + chunk_size]
+        text  = "\n\n".join(chunk)
+        # use your existing PEGASUS summarizer
+        sum_chunk = summarize_text(text, max_length=max_length)
+        intermediate_summaries.append(sum_chunk)
+
+    # 2) Combine intermediate summaries
+    combined = "\n\n".join(intermediate_summaries)
+
+    # 3) Final pass
+    final_summary = summarize_text(combined, max_length=max_length)
+    return final_summary
+
+def build_global_concept_map(papers):
+    """
+    Aggregate keyphrases from all papers, size nodes by frequency, and
+    connect nodes if they co-occur in the same paper.
+    """
+    # 1) collect per-paper sets of phrases
+    per_paper = []
+    for p in papers:
+        ents = extract_entities(p["abstract"])
+        per_paper.append({e for e,_ in ents})
+
+    # 2) flatten all and count frequencies
+    all_phrases = [e for p in per_paper for e in p]
+    freq = Counter(all_phrases)
+    nodes = list(freq.keys())
+
+    # 3) build network
+    net = Network(height="600px", width="100%")
+    id_map = {ph:i for i,ph in enumerate(nodes, start=1)}
+    for ph, count in freq.items():
+        net.add_node(
+            id_map[ph],
+            label=ph,
+            title=f"{count} papers",
+            size=10 + 2*count
+        )
+
+    # 4) co-occurrence edges (per paper)
+    cooc = Counter()
+    for phrases in per_paper:
+        for a,b in combinations(sorted(phrases), 2):
+            cooc[(a,b)] += 1
+    for (a,b), c in cooc.items():
+        net.add_edge(id_map[a], id_map[b], value=c)
+
+    return net
 
 def build_concept_map(phrases, sim_threshold: float = 0.85) -> Network:
     """

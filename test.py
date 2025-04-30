@@ -1,6 +1,27 @@
-from paper2cmap import Paper2CMap
+from semanticscholar import SemanticScholar
+import time
+from itertools import islice
 
-paper2cmap = Paper2CMap(model_name="gpt-3.5-turb")
-paper2cmap.load(r"C:\Users\limmi\Desktop\Ming En\Masters\Modules\Sem 3\CS5260\Project\pdf\s41467-024-45563-x.pdf")
-paper2cmap.generate_cmap()
-print("Concept map generated successfully.")
+
+sch = SemanticScholar(timeout=30)
+
+def fetch_semantic_scholar(query, max_results=5):
+    paginated = sch.search_paper(query, fields=['title'], limit=max_results) 
+    papers = []
+    for paper in islice(paginated, max_results):
+        abstract = paper.abstract or ""
+        if not abstract.strip():
+            continue
+        papers.append({
+            "entry_id": paper.paperId,
+            "title":    paper.title,
+            "abstract": abstract
+        })
+    return papers
+
+query = "adversarial machine learning"
+papers = fetch_semantic_scholar(query, max_results=99)
+for paper in papers:
+    print(paper["title"])
+    print(paper["abstract"])
+    print()
