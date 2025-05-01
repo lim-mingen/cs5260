@@ -39,7 +39,7 @@ A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize
 
 5. Open the URL printed in your terminal to start exploring
 
-🛠️ Features & Methodology
+## 🛠️ Features & Methodology
 1. Data Collection
 Source: arXiv via the arxiv Python library
 
@@ -75,7 +75,7 @@ Nodes: top 10 keyphrases per paper
 Edges: connect if cosine similarity ≥ 0.85
 Layout: force-directed repulsion (nodeDistance, springLength, damping)
 
-🔬 Experiments & Dead-Ends
+## 🔬 Experiments & Dead-Ends
 Semantic Scholar & CrossRef
 • Added fetch_semantic_scholar and fetch_crossref with semanticscholar/habanero clients
 • Outcome: most results lacked abstracts or relevance → disabled
