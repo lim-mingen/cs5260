@@ -31,7 +31,7 @@ A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize
    ```bash
       pip install -r requirements.txt
 
-3. Add your DeepInfra API key in confif/.env
+3. Add your DeepInfra API key in config/.env
 
 4. Run the app
    ```bash
@@ -71,7 +71,7 @@ A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize
 - **Edges**: connect if cosine similarity ≥ 0.85
 - **Layout**: force-directed repulsion (nodeDistance, springLength, damping)
 
-## 🔬 Experiments & Dead-Ends
+## 🔬 Experiments & Outcomes
 
 1. **Semantic Scholar & CrossRef**  
    • Added `fetch_semantic_scholar` and `fetch_crossref` with `semanticscholar`/`habanero` clients  
