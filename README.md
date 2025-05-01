@@ -2,14 +2,15 @@
 
 A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize, and visualize the conceptual landscape of academic papers.  
 
-- 🔍 **Search** ArXiv by keyword  
-- ✂️ **Per-paper summary** (2 – 3 sentences) via spaCy extractive summarization  
-- 🤖 **Cross-paper summary** (5 – 6 sentences) driven by **Qwen/Qwen2.5-Coder-32B-Instruct**  
-- 🌐 **Global concept map** (all papers) and 📝 **per-paper concept maps** via KeyBERT + Sentence-Transformer embeddings + PyVis  
+- **Search** ArXiv by keyword  
+- **Per-paper summary** (2 – 3 sentences) via spaCy extractive summarization  
+- **Cross-paper summary** (5 – 6 sentences) driven by **Qwen/Qwen2.5-Coder-32B-Instruct**  
+- **Global concept map** (all papers) and 📝 **per-paper concept maps** via KeyBERT + Sentence-Transformer embeddings + PyVis  
+- **Export to PDF** for saving summaries in a neatly formatted document  
 
 ---
 
-## 📂 Repository Layout
+## Repository Layout
 
 - util.py: contains core functions to summarize, extract and build concept map
 - main.py: contains Gradio UI functions
@@ -20,7 +21,7 @@ A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize
 
 ---
 
-## ⚙️ Installation
+## Installation
 
 1. **Clone** the repo and enter its folder  
    ```bash
@@ -39,7 +40,7 @@ A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize
 
 5. Open the URL printed in your terminal to start exploring
 
-## 🛠️ Features & Methodology
+## Features & Methodology
 
 ### 1. Data Collection  
 - **Source**: arXiv via the `arxiv` Python library  
@@ -70,6 +71,19 @@ A lightweight Gradio dashboard to help AI/ML researchers quickly find, summarize
 - **Nodes**: top 10 keyphrases per paper
 - **Edges**: connect if cosine similarity ≥ 0.85
 - **Layout**: force-directed repulsion (nodeDistance, springLength, damping)
+
+### 5. Progress Bar  
+- **Purpose**: Provides real-time updates on the status of long-running tasks (e.g., generating summaries and concept maps).  
+- **How**:  
+  - Implemented using Gradio's `yield` functionality in the `process_all` function.  
+  - Displays messages like "Generating cross-paper summary..." and "Processing paper X of Y..." in a `gr.Textbox`.  
+
+  ### 6. Export to PDF  
+- **Purpose**: Allows users to save the cross-paper summary in a neatly formatted PDF document.  
+- **How**:  
+  - Extracts `<p>` blocks from the HTML output using `BeautifulSoup`.  
+  - Formats the summary with headers and spacing using the `FPDF` library.  
+  - Saves the PDF as `summary.pdf` and provides a download link in the Gradio interface.  
 
 ## 🔬 Experiments & Outcomes
 
