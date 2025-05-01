@@ -7,11 +7,8 @@ from util import (
     summarize_abstract_spacy,
     extract_entities,
     build_concept_map,
-    cluster_abstracts,
-    summarize_clusters,
-    summarize_abstracts_batch,
-    build_narrative,
-    build_global_concept_map,
+    summarize_abstracts_llm,
+    build_global_concept_map
 )
 
 def df_to_html_table(df: pd.DataFrame) -> str:
@@ -36,8 +33,7 @@ def df_to_html_table(df: pd.DataFrame) -> str:
     html.append("</tbody></table>")
     return "\n".join(html)
 
-def search_papers(query: str, max_results: str, source: str):
-    # parse number of papers
+def search_papers(query: str, max_results: str):
     try:
         n = int(max_results)
         n = n if n>0 else 5
@@ -47,13 +43,14 @@ def search_papers(query: str, max_results: str, source: str):
     # dispatch based on dropdown
     # if source == "arXiv":
     #     papers = fetch_arxiv(query, max_results=n)
-    # elif source == "Semantic Scholar":  # Disabling since Semantic Scholar paper's dont have abstracts
+    # elif source == "Semantic Scholar":
     #     papers = fetch_semantic_scholar(query, max_results=n)
-    # else:  # Disabling since scraped papers from CrossRef are not useful
+    # else: 
     #     papers = fetch_crossref(query, max_results=n)
 
     records = []
     papers = fetch_arxiv(query, max_results=n)
+    # Abstract summaries using Spacy
     for p in papers:
         print(p["title"])
         raw   = summarize_abstract_spacy(p["abstract"], num_sentences=2)
@@ -63,21 +60,11 @@ def search_papers(query: str, max_results: str, source: str):
     return papers, df_to_html_table(df)
 
 def process_all(papers):
-    # # 1) Cross‐paper clustering & narrative
-    # abstracts = [p["abstract"] for p in papers]
-    # clusters  = cluster_abstracts(abstracts, max_clusters=5)
-    # cl_sums   = summarize_clusters(clusters)
-    # narrative = build_narrative(cl_sums)
-
-    # 1) Single cross‐paper summary over all abstracts
+    # Cross-Paper Summary using Qwen
     abstracts = [p["abstract"] for p in papers]
-    narrative = summarize_abstracts_batch(
-        abstracts,
-        max_length=400,
-        chunk_size=len(papers)    # tweak this if you have more/fewer papers
-    )
+    narrative = summarize_abstracts_llm(abstracts)
 
-    # 2) Global concept map
+    # Global concept map
     global_map   = build_global_concept_map(papers)
     global_html  = global_map.generate_html()
     escaped_global_html = global_html.replace('"', '&quot;')
@@ -88,7 +75,7 @@ def process_all(papers):
         '></iframe>'
     )
 
-    # 3) Individual concept maps
+    # Individual concept maps
     parts = [
         "<div style='width:100%;'>",
         "<h1>Cross-Paper Summary</h1>",
